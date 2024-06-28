@@ -1,12 +1,7 @@
 #![allow(unused)]
 
-mod error;
-mod web;
-
-pub use self::error::{Error, Result};
-
 use axum::{
-    body::Bytes, extract::{Path, Query}, middleware, response::{Html, IntoResponse, Response}, routing::get, Router
+    body::Bytes, extract::{Path, Query, State}, middleware, response::{Html, IntoResponse, Response}, routing::get, Router, http::StatusCode,
 };
 use tower_cookies::CookieManagerLayer;
 use std::{
@@ -27,14 +22,16 @@ struct AppState {
 
 #[tokio::main]
 async fn main(){
+
+    let state = SharedState::default();
+
     let router = Router::new()
-    .merge(routes_root())
-    .merge(web::routes_login::routes())
+    .merge(routes_root(Arc::clone(&state)))
     .layer(middleware::map_response(main_response_mapper))
     .layer(CookieManagerLayer::new());
     
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
-    println!("->> LISTENINING ON localhost:8080\n");
+    println!("->> LISTENING ON localhost:8080\n");
     axum::serve(listener, router).await.unwrap();
 }
 
@@ -45,45 +42,33 @@ async fn main_response_mapper(res: Response) -> Response {
     res
 }
 
-fn routes_root() -> Router{
+fn routes_root(sharedstate: SharedState) -> Router{
     Router::new().route(
         "/hello",
-        get(hello_world_handler)
+        get(|| async { "Hello World"})
     )
+    // Route to retrieve a value for a key in
+    // the key-store db
     .route(
-        "/helloQuery",
-        get(hello_world_query_handler)
+        "key/:key",
+        get(get_key)
     )
-    .route(
-        "/hello/:name",
-        get(hello_world_path_handler)
-    )
+    .with_state(Arc::clone(&sharedstate))
 }
 
-async fn hello_world_handler() -> impl IntoResponse{
-    println!("->> {:<12} - handler_hello_world", "HANDLER");
-
-    return Html("Hello <strong>World!</strong>");
-}
-
-#[derive(Debug, Deserialize)]
-struct HelloParams{
-    name: Option<String>,
-}
-
-async fn hello_world_query_handler(
-    Query(params): Query<HelloParams>
+async fn get_key(
+    Path(key): Path<String>,
+    State(sharedstate): State<SharedState>,
 ) -> impl IntoResponse {
-    let name = params.name.as_deref().unwrap_or("World");
     
-    println!("->> {:<12} - handler_hello_world_query - {name:?}", "HANDLER");
-    Html(format!("Hello {name}!"))
+    let db = &sharedstate.read().unwrap().db;
+
+    if let Some(value) = db.get(&key){
+        Ok(value.clone())
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
 }
 
-async fn hello_world_path_handler(
-    Path(name): Path<String>
-) -> impl IntoResponse{
-    println!("->> {:<12} - handler_hello_world_path - {name:?}", "HANDLER");
 
-    Html(format!("Hello {name}!"))
-}
+
